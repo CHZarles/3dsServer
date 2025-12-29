@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gaussian Splatting — Training Server UI</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width:900px; margin:20px auto; }
+    header { display:flex; align-items:center; gap:12px; }
+    .card { border:1px solid #ddd; padding:12px; margin-top:12px; border-radius:6px; }
+    button { padding:6px 10px; }
+    input[type=file] { display:block; margin-top:8px; }
+    pre { background:#f7f7f7; padding:8px; overflow:auto }
+    table { width:100%; border-collapse:collapse }
+    th,td { border:1px solid #eee; padding:6px; text-align:left }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Training Server UI</h1>
+  <nav style="margin-left:auto"><a href="/ui">UI</a> · <a href="/docs">API Docs</a></nav>
+</header>
+
+<section class="card">
+  <h2>Upload Video</h2>
+  <form id="uploadForm">
+    <input type="file" id="videoFile" name="file" accept="video/*" required />
+    <div style="margin-top:8px">
+      <label>Max frames: <input type="number" id="maxFrames" value="100" /></label>
+      <label style="margin-left:12px">Min frames: <input type="number" id="minFrames" value="30" /></label>
+      <label style="margin-left:12px"><input type="checkbox" id="startTraining" checked /> Auto-start training</label>
+    </div>
+    <div style="margin-top:8px">
+      <button type="submit">Upload</button>
+    </div>
+  </form>
+  <div id="uploadResult"></div>
+</section>
+
+<section class="card">
+  <h2>Tasks</h2>
+  <div>
+    <button id="refreshTasks">Refresh</button>
+    <label style="margin-left:12px"><input type="checkbox" id="hideDeleted" checked /> Hide deleted</label>
+  </div>
+  <table id="tasksTable">
+    <thead><tr><th>Task ID</th><th>Actions</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Task Details</h2>
+  <div id="taskDetails">Select a task to see details.</div>
+</section>
+
+<script>
+async function api(path, opts){
+  const res = await fetch(path, opts);
+  if(!res.ok){
+    const txt = await res.text();
+    throw new Error(`${res.status} ${res.statusText}: ${txt}`);
+  }
+  const ct = res.headers.get('content-type') || '';
+  if(ct.includes('application/json')) return res.json();
+  if(ct.includes('text/plain')) return res.text();
+  return res;
+}
+
+const uploadForm = document.getElementById('uploadForm');
+const uploadResult = document.getElementById('uploadResult');
+uploadForm.addEventListener('submit', async (e) =>{
+  e.preventDefault();
+  const fileInput = document.getElementById('videoFile');
+  if(!fileInput.files.length) return alert('Choose a video file');
+  const form = new FormData();
+  form.append('file', fileInput.files[0]);
+  form.append('max_frames', document.getElementById('maxFrames').value);
+  form.append('min_frames', document.getElementById('minFrames').value);
+  form.append('start_training', document.getElementById('startTraining').checked ? 'true' : 'false');
+  uploadResult.textContent = 'Uploading...';
+  try{
+    const resp = await api('/upload', { method:'POST', body: form });
+    uploadResult.innerHTML = `<pre>${JSON.stringify(resp, null, 2)}</pre>`;
+    refreshTasks();
+  }catch(err){
+    uploadResult.innerHTML = `<pre style="color:red">${err}</pre>`;
+  }
+});
+
+async function refreshTasks(){
+  try{
+    const data = await api('/tasks');
+    const tbody = document.querySelector('#tasksTable tbody');
+    tbody.innerHTML = '';
+    const hideDeleted = document.getElementById('hideDeleted')?.checked;
+
+    // helper to append a row for a given id
+    const appendRow = (id) => {
+      const tr = document.createElement('tr');
+      const tdId = document.createElement('td');
+      tdId.textContent = id;
+      const tdActions = document.createElement('td');
+      const statusBtn = document.createElement('button'); statusBtn.textContent='Status';
+      statusBtn.onclick = ()=> showStatus(id);
+      const logsBtn = document.createElement('button'); logsBtn.textContent='Logs';
+      logsBtn.style.marginLeft='8px';
+      logsBtn.onclick = ()=> showLogs(id);
+      const downloadBtn = document.createElement('button'); downloadBtn.textContent='Download';
+      downloadBtn.style.marginLeft='8px';
+      downloadBtn.onclick = ()=> { window.location = `/download/${id}` };
+      const delBtn = document.createElement('button'); delBtn.textContent='Delete'; delBtn.style.marginLeft='8px';
+      delBtn.onclick = ()=> deleteTask(id);
+      tdActions.appendChild(statusBtn);
+      tdActions.appendChild(logsBtn);
+      tdActions.appendChild(downloadBtn);
+      tdActions.appendChild(delBtn);
+      tr.appendChild(tdId); tr.appendChild(tdActions);
+      tbody.appendChild(tr);
+    };
+
+    if(hideDeleted){
+      // Fetch statuses in parallel and only append non-deleted tasks
+      const statusPromises = data.tasks.map(id =>
+        api(`/status/${id}`).then(info => ({id, status: info.status})).catch(() => ({id, status: null}))
+      );
+      const results = await Promise.all(statusPromises);
+      for(const r of results){
+        if(r.status === 'deleted') continue;
+        appendRow(r.id);
+      }
+    }else{
+      for(const id of data.tasks){
+        appendRow(id);
+      }
+    }
+  }catch(err){ console.error(err); }
+}
+
+async function showStatus(id){
+  const details = document.getElementById('taskDetails');
+  details.textContent = 'Loading...';
+  try{
+    const info = await api(`/status/${id}`);
+    details.innerHTML = `<pre>${JSON.stringify(info, null, 2)}</pre>`;
+  }catch(err){ details.innerHTML = `<pre style="color:red">${err}</pre>` }
+}
+
+async function showLogs(id){
+  const details = document.getElementById('taskDetails');
+  details.textContent = 'Loading logs...';
+  try{
+    const linesInput = document.getElementById('logLines');
+    const lines = linesInput ? encodeURIComponent(linesInput.value) : 200;
+    const content = await api(`/logs/${id}?lines=${lines}`);
+    details.innerHTML = `<pre>${escapeHtml(content)}</pre>`;
+  }catch(err){ details.innerHTML = `<pre style="color:red">${err}</pre>` }
+}
+
+function escapeHtml(unsafe){
+  return unsafe
+    .replaceAll('&','&amp;')
+    .replaceAll('<','&lt;')
+    .replaceAll('>','&gt;')
+    .replaceAll('"','&quot;')
+    .replaceAll("'","&#039;");
+}
+
+async function deleteTask(id){
+  if(!confirm('Delete task and all files?')) return;
+  try{
+    await api(`/task/${id}`, { method:'DELETE' });
+    refreshTasks();
+    document.getElementById('taskDetails').textContent='Task deleted';
+  }catch(err){ alert('Delete failed: '+err) }
+}
+
+document.getElementById('refreshTasks').addEventListener('click', refreshTasks);
+
+// initial load
+refreshTasks();
+</script>
+</body>
+</html>
