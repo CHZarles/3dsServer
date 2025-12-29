@@ -39,11 +39,9 @@ training_server.py (主服务器)
 
 ### 状态流转
 ```
-PENDING → PREPROCESSING → PREPROCESSING_COMPLETED
+PENDING → PREPROCESSING → PREPROCESSING_COMPLETED / FAILED
                       ↓
-                   TRAINING → TRAINING_COMPLETED
-                      ↓
-                    FAILED
+                   TRAINING → TRAINING_COMPLETED / FAILED
 ```
 
 ## 📁 目录结构
